@@ -1,0 +1,180 @@
+---
+title: "Practical Machine Learning - weight lifting exercise"
+author: "Zhenning Xu"
+date: "May 14, 2019"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+---
+  title: "cssTest"
+    output:
+    html_document:
+      css: custom.css
+      toc: yes
+---
+---
+TOC {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 200px;
+  height: 100%;
+  overflow:auto;
+}
+---
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+## Loading data
+The training data for this project are available here: 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+```{r cache=TRUE}
+library(RCurl)
+train_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+test_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+train <- read.csv(text=getURL(train_url), na.strings=c("", "NA"))
+test <- read.csv(text=getURL(test_url), na.strings=c("", "NA"))
+```
+
+## Preparing data set
+Since the data set have a lot of missing data, we need to preprocess data.
+```{r preparing data}
+library(plyr)
+library(RCurl)
+library(caret)
+# remove columns with a lot of NA values
+goodVars <- which((colSums(!is.na(train)) >= 0.6*nrow(train)))
+train <- train[,goodVars]
+test <- test[,goodVars]
+# remove problem id
+test <- test[-ncol(test)]
+# fix factor levels
+test$new_window <- factor(test$new_window, levels=c("no","yes"))
+#Remove X and cvtd_timestamp colums from the dataset since they are not relevant
+train <- train[,-c(1,5)]
+test <- test[,-c(1,5)]
+```
+
+## slicing data
+Partition rows into training and crossvalidation - The clean training data set was split in two parts, 60% for training and 40% for testing.
+```{r slicing data}
+set.seed(12345)
+inTrain <- createDataPartition(train$classe, p = 0.6)[[1]]
+train <- train[inTrain,]  #60%
+crossv <- train[-inTrain,]   #40%
+```
+
+## Decision trees
+The goal of project is to predict the manner in which participants did the exercise. This is the *classe* variable in the training set (Factor variable with 5 levels A, B, C, D, E).
+
+The first model for prediction will be CART model or Classification and Regression Tree. Let's build the model and plot the tree, to see how classification is made.
+
+```{r results='hide', message=FALSE, warning=FALSE}
+library(rpart)
+library(rpart.plot)
+```
+```{r cart model}
+modelCART <- rpart(classe ~ ., data = train)
+# we can plot the tree to see how classification is working 
+prp(modelCART)
+```
+Now, let's make predictions for the cross validation set.
+```{r results='hide', message=FALSE, warning=FALSE}
+#predictions for the cross validation set
+#load(caret)
+library(caret)
+predictCART <- predict(modelCART, newdata = crossv)
+crossv$classe <- NULL
+for (i in 1:length(crossv[,1])) {
+  crossv$classe[i] <- names(which.max(predictCART[i,]))
+}
+as.factor(crossv$classe)
+```
+
+## Random Forest
+The second model is Random Forest.
+
+```{r results='hide', message=FALSE, warning=FALSE}
+library(randomForest)
+modelRF <- randomForest(classe ~ ., data=train, ntree=64)
+crossv$classe <- predict(modelRF, newdata = crossv)
+crossv$classe
+```
+
+## Cross validation and confusion matrix
+
+We will use two models for training of classe variable dependent on all the other variables (all the sensor readings and person names): decision trees (rpart) and random forests. We will decide which one we will use on the validation data after we see the results on the cross validation data.
+
+
+```{r results='hide', message=FALSE, warning=FALSE}
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+modFit1 <- train(classe ~ ., method = "rpart", data = train)
+modFit1$finalModel
+res1 <- predict(modFit1, crossv)
+cnf1 <- confusionMatrix(crossv$classe, res1)
+cnf1
+```
+
+```{r rpart}
+rattle::fancyRpartPlot(modFit1$finalModel, sub = "Decision Trees")
+# plot matrix results
+plot(cnf1$table, col = cnf1$byClass, 
+     main = paste("Decision Tree - Accuracy =",
+                  round(cnf1$overall['Accuracy'], 4)))
+```
+
+We can see that rpart has a quite low accuracy (59%).
+For the random forest we decided to limit the number of trees to 64 because of the calculation speed. We will check the error rate and see if we need to increase it.
+
+```{r rf}
+modFit2 <- train(classe ~ ., method = "rf", data = train, ntree=64)
+res2 <- predict(modFit2, crossv)
+cnf2 <- confusionMatrix(crossv$classe, res2)
+cnf2
+# plot matrix results
+plot(cnf2$table, col = cnf2$byClass, 
+     main = paste("Random Forest - Accuracy =",
+                  round(max(modFit2$results$Accuracy) * 100, 4)))
+```
+
+From the confusion matrix result of the Random Forest model, we got an accuracy of 0.997, meaning the out of sample error is .003 which is a very good mark. 
+
+
+Because we limited the number of trees to 64, let's see if we could improve the prediction dramatically by increasing the number. We will plot the error rates by the number of trees:
+
+```{r treesplot}
+plot(x=1:64, y=modFit2$finalModel$err.rate[,1], type="l", xlab = "Number of trees", ylab = "Error rate", main = "Random forest error rate per number of trees")
+```
+
+It is clear now that after 40 trees the decrease in error is very small so it does not make sense to increase the number of trees.
+This is the model of choice.
+```{r summ}
+modFit2$finalModel
+```
+
+## Predicting on the test set -  the 20 cases
+
+In the end, we will use our model of choice (random forests) to predict the results in the validation dataset and respond to the final quiz.
+```{r finalprediction}
+final_predictions <- predict(modFit2, test)
+final_predictions
+```
+
+### Summary
+I was able to submit the right 20 responses on the given test set by using the Random Forest model. I was expected at least 19 answers correct out of 20 given this first model has:
+
+    99.7% accuracy
+    <0.3% Out of the Bag error.
+
+One can see that there is a difference in resulsts for CART model and Random Forests. It has to do with the fact that CART model has larger prediction error. All results was submitted in different part of this project.
+
